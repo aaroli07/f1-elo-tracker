@@ -1,6 +1,15 @@
+import sys
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 import numpy as np
 import streamlit as st
+
+# Streamlit may put only the app directory on sys.path when launched from WSL
+# or by an IDE. Add the repository root so the sibling src package is importable.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data_load import DATA_DIR, load_all
 from src.pipeline import build_ratings

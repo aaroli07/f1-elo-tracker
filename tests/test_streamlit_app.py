@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+import sys
 
 from streamlit.testing.v1 import AppTest
 
@@ -7,7 +8,17 @@ from streamlit.testing.v1 import AppTest
 class StreamlitAppTests(unittest.TestCase):
     def test_app_renders_driver_search_and_multiple_selected_ratings(self):
         app_path = Path(__file__).resolve().parents[1] / "app" / "streamlit_app.py"
-        app = AppTest.from_file(str(app_path)).run(timeout=90)
+        project_root = app_path.parent.parent.resolve()
+        original_path = sys.path[:]
+        sys.path[:] = [
+            entry
+            for entry in sys.path
+            if Path(entry or Path.cwd()).resolve() != project_root
+        ]
+        try:
+            app = AppTest.from_file(str(app_path)).run(timeout=90)
+        finally:
+            sys.path[:] = original_path
 
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(len(app.multiselect), 1)
