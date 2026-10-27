@@ -1,40 +1,95 @@
-import streamlit as st
 import matplotlib.pyplot as plt
-from src.data_io import load_all
+import numpy as np
+import streamlit as st
+
+from src.data_load import DATA_DIR, load_all
 from src.pipeline import build_ratings
 
-# Load data
-data_drivers, data_races, data_results = load_all()
-Ratings_History, driver_index_map, sorted_race_ids = build_ratings(
-    data_drivers, data_races, data_results
+
+@st.cache_data(show_spinner="Loading race history...")
+def load_rating_snapshot(data_fingerprint):
+    del data_fingerprint  # Included in the cache key to refresh when CSVs change.
+    drivers, races, results = load_all()
+    history, index_map, race_ids = build_ratings(drivers, races, results)
+    return drivers, races, history, index_map, race_ids
+
+
+data_fingerprint = tuple(
+    (path.name, path.stat().st_size, path.stat().st_mtime_ns)
+    for path in (
+        DATA_DIR / "DriversMOD.csv",
+        DATA_DIR / "RacesMOD.csv",
+        DATA_DIR / "results.csv",
+    )
+)
+data_drivers, data_races, ratings_history, driver_index_map, sorted_race_ids = (
+    load_rating_snapshot(data_fingerprint)
 )
 
-st.title("F1 Elo Rating Viewer with Slider Animation")
+st.title("Formula 1 Driver Elo")
+st.caption(
+    "Ratings compare teammates, with a smaller adjustment for overall race "
+    "position."
+)
 
-# Select multiple drivers (comma-separated or one at a time)
-drivers_input = st.text_input("Enter driverRef names (comma-separated, max 10):")
-driver_names = [d.strip() for d in drivers_input.split(",") if d.strip()][:10]
+if ratings_history.shape[1] == 0:
+    st.warning("No race results are available to rate.")
+    st.stop()
 
-# Slider for race number
-max_races = Ratings_History.shape[1]
-race_frame = st.slider("Select Race Number", 1, max_races, 1)
+drivers_with_ratings = {}
+for row in data_drivers.itertuples(index=False):
+    driver_id = row.driverId
+    if driver_id not in driver_index_map:
+        continue
+    history = ratings_history[driver_index_map[driver_id]]
+    if not np.isfinite(history).any():
+        continue
+    full_name = f"{row.forename} {row.surname}".strip()
+    driver_ref = row.driverRef
+    drivers_with_ratings[driver_id] = f"{full_name} ({driver_ref})"
 
-if driver_names:
+selected_driver_ids = st.multiselect(
+    "Search for one or more drivers",
+    options=list(drivers_with_ratings),
+    max_selections=10,
+    format_func=lambda driver_id: drivers_with_ratings[driver_id],
+    help="Search by driver name or reference, then select multiple drivers to compare.",
+)
+
+race_count = st.slider(
+    "Show history through race number",
+    min_value=1,
+    max_value=ratings_history.shape[1],
+    value=ratings_history.shape[1],
+)
+
+if selected_driver_ids:
+    metric_columns = st.columns(len(selected_driver_ids))
+    for column, driver_id in zip(metric_columns, selected_driver_ids):
+        driver_history = ratings_history[driver_index_map[driver_id]]
+        available = np.flatnonzero(np.isfinite(driver_history))
+        latest_index = available[-1]
+        column.metric(
+            drivers_with_ratings[driver_id],
+            f"{driver_history[latest_index]:.1f}",
+            help=f"Latest rating after race {latest_index + 1}.",
+        )
+
     fig, ax = plt.subplots()
-    any_valid = False
+    x_values = np.arange(1, race_count + 1)
+    for driver_id in selected_driver_ids:
+        driver_history = ratings_history[driver_index_map[driver_id]][:race_count]
+        ax.plot(
+            x_values,
+            driver_history,
+            label=drivers_with_ratings[driver_id],
+        )
 
-    for name in driver_names:
-        try:
-            driver_id = data_drivers[data_drivers['driverRef'] == name]['driverId'].values[0]
-            idx = driver_index_map[driver_id]
-            ax.plot(range(race_frame), Ratings_History[idx, :race_frame], label=name)
-            any_valid = True
-        except IndexError:
-            st.warning(f"Driver '{name}' not found")
-
-    if any_valid:
-        ax.set_xlabel("Race Number")
-        ax.set_ylabel("Elo Rating")
-        ax.set_title(f"Elo Ratings up to Race {race_frame}")
-        ax.legend()
-        st.pyplot(fig)
+    ax.set_xlabel("Race number")
+    ax.set_ylabel("Elo rating")
+    ax.set_title(f"Driver ratings through race {race_count}")
+    ax.legend()
+    ax.grid(alpha=0.2)
+    st.pyplot(fig)
+else:
+    st.info("Select one or more drivers to see their latest rating and history.")
