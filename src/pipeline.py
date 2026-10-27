@@ -1,102 +1,155 @@
-
+from itertools import combinations
 
 import numpy as np
 import pandas as pd
-from src.elo import calculate_new_elo  # import your Elo math functions
+
+from src.elo import (
+    OVERALL_POSITION_SCALE,
+    OVERALL_POSITION_WEIGHT,
+    TEAMMATE_WEIGHT,
+    calculate_new_elo,
+)
+
+
+INITIAL_RATING = 1000.0
+STARTING_LAPS_MINIMUM = 1
+
+
+def _numeric_column(frame, column):
+    return pd.to_numeric(frame[column], errors="coerce")
+
 
 def build_ratings(data_drivers, data_races, data_results):
+    """Build race-by-race ratings from result rows.
+
+    A driver starts at ``INITIAL_RATING`` on their first race with at least one
+    completed lap. Each race blends the existing teammate margin update (80%)
+    with a centered, field-wide finishing-position adjustment (20%).
+
+    Returns a driver-by-race rating matrix, a driverId-to-row mapping, and race
+    IDs ordered by race date. Ratings before a driver's first start are NaN.
     """
-    Compute Elo ratings for all drivers over all races.
-    
-    Args:
-        data_drivers (pd.DataFrame): Drivers data.
-        data_races (pd.DataFrame): Races data.
-        data_results (pd.DataFrame): Results data.
-        
-    Returns:
-        Ratings_History (np.ndarray): Elo ratings matrix [drivers x races].
-        driver_index_map (dict): Mapping driverId -> row index in Ratings_History.
-        sorted_race_ids (np.ndarray): Array of race IDs sorted by date.
-    """
-    
-    # --- Extract arrays ---
-    results_raceId = np.array(data_results['raceId'])
-    results_driverId = np.array(data_results['driverId'])
-    results_constructorId = np.array(data_results['constructorId'])
-    results_positionOrder = np.array(data_results['position'])
-    
-    race_raceId = np.array(data_races['raceId'])
-    race_date = np.array(data_races['date'])
-    
-    # --- Sort races by date ---
-    sorted_race_ids = sorted(race_raceId, key=lambda rid: race_date[np.where(race_raceId == rid)[0][0]])
-    
-    # --- Merge results with race dates ---
-    merged_results = pd.merge(
-        data_results,
-        data_races[['raceId','date']],
-        how='left',
-        on='raceId'
+    del data_drivers  # Driver rows are not needed; IDs come from race results.
+
+    required_result_columns = {
+        "raceId", "driverId", "constructorId", "positionOrder", "laps"
+    }
+    missing_result_columns = required_result_columns - set(data_results.columns)
+    if missing_result_columns:
+        raise ValueError(
+            "Results data is missing required columns: "
+            + ", ".join(sorted(missing_result_columns))
+        )
+    if not {"raceId", "date"}.issubset(data_races.columns):
+        raise ValueError("Race data must contain raceId and date columns")
+    if data_races["raceId"].duplicated().any():
+        raise ValueError("Race data contains duplicate raceId values")
+    if data_results[["raceId", "driverId"]].isna().any().any():
+        raise ValueError("Results data contains missing raceId or driverId values")
+
+    races = data_races[["raceId", "date"]].copy()
+    races["date"] = pd.to_datetime(races["date"], errors="coerce")
+    if races["date"].isna().any():
+        raise ValueError("Race data contains missing or invalid dates")
+
+    merged = data_results.merge(
+        races,
+        how="left",
+        on="raceId",
+        validate="many_to_one",
+        indicator=True,
     )
-    merged_sorted = merged_results.sort_values(by='date')
-    
-    # Arrays from merged results
-    results_raceId = np.array(merged_sorted['raceId'])
-    results_driverId = np.array(merged_sorted['driverId'])
-    results_constructorId = np.array(merged_sorted['constructorId'])
-    results_positionOrder = np.array(merged_sorted['position'])
-    
-    # --- Driver indexing ---
-    unique_driver_ids = np.unique(results_driverId)
-    driver_index_map = {driver_id: idx for idx, driver_id in enumerate(unique_driver_ids)}
-    
-    n_drivers = len(unique_driver_ids)
-    n_races = len(np.unique(results_raceId))
-    
-    # --- Initialize Ratings_History ---
-    Ratings_History = np.zeros((n_drivers, n_races))
-    Ratings_History[:,0] = 1000  # initial Elo
-    
-    # --- Main loop ---
-    number_of_iterations = 0
-    for race_id in sorted_race_ids:
-        race_indices = np.where(results_raceId == race_id)[0]
-        race_drivers = results_driverId[race_indices]
-        race_constructors = results_constructorId[race_indices]
-        race_positions = results_positionOrder[race_indices]
-        
-        # Carry over previous ratings
-        if number_of_iterations > 0:
-            Ratings_History[:, number_of_iterations] = Ratings_History[:, number_of_iterations-1]
-        
-        # Loop over constructors (teams)
-        for constructor in np.unique(race_constructors):
-            team_indices = race_indices[race_constructors == constructor]
-            if len(team_indices) != 2:
-                continue
-            
-            # Driver IDs and positions
-            d1_idx, d2_idx = team_indices
-            driver1_id = results_driverId[d1_idx]
-            driver2_id = results_driverId[d2_idx]
-            
-            try:
-                pos1 = int(results_positionOrder[d1_idx])
-                pos2 = int(results_positionOrder[d2_idx])
-            except ValueError:
-                continue
-            if pos1 == r"\N" or pos2 == r"\N":
-                continue
-            
-            # Current Elo
-            elo1 = Ratings_History[driver_index_map[driver1_id], number_of_iterations]
-            elo2 = Ratings_History[driver_index_map[driver2_id], number_of_iterations]
-            
-            # Update Elo
-            new_elo1, new_elo2 = calculate_new_elo(elo1, elo2, pos1, pos2)
-            Ratings_History[driver_index_map[driver1_id], number_of_iterations] = new_elo1
-            Ratings_History[driver_index_map[driver2_id], number_of_iterations] = new_elo2
-        
-        number_of_iterations += 1
-    
-    return Ratings_History, driver_index_map, sorted_race_ids
+    unmatched_races = merged.loc[merged["_merge"] != "both", "raceId"].unique()
+    if len(unmatched_races):
+        raise ValueError(
+            "Results reference raceId values missing from race data: "
+            + ", ".join(map(str, unmatched_races[:5]))
+        )
+    merged = merged.drop(columns="_merge").sort_values(
+        ["date", "raceId"], kind="stable"
+    )
+    merged["_laps"] = _numeric_column(merged, "laps")
+    merged["_position"] = _numeric_column(merged, "positionOrder")
+    # Some historic races list one driver under multiple entries. Keep the
+    # entry in which they completed the most laps; use numeric classification
+    # as a stable tie-breaker before treating the driver as a single entrant.
+    merged = merged.sort_values(
+        ["raceId", "driverId", "_laps", "_position"],
+        ascending=[True, True, False, True],
+        na_position="last",
+        kind="stable",
+    ).drop_duplicates(["raceId", "driverId"], keep="first")
+    merged = merged.sort_values(["date", "raceId"], kind="stable")
+    sorted_race_ids = merged["raceId"].drop_duplicates().tolist()
+
+    driver_ids = np.sort(merged["driverId"].unique())
+    driver_index_map = {driver_id: index for index, driver_id in enumerate(driver_ids)}
+    ratings = np.full((len(driver_ids), len(sorted_race_ids)), np.nan, dtype=float)
+
+    for race_index, race_id in enumerate(sorted_race_ids):
+        race = merged.loc[merged["raceId"] == race_id].copy()
+        if race_index:
+            ratings[:, race_index] = ratings[:, race_index - 1]
+
+        race["_constructor"] = race["constructorId"].replace(r"\N", pd.NA)
+        starters = race.loc[
+            race["_laps"].ge(STARTING_LAPS_MINIMUM)
+            & race["_position"].notna()
+        ].copy()
+        if starters.empty:
+            continue
+
+        starter_ids = starters["driverId"].unique()
+        current = {}
+        for driver_id in starter_ids:
+            row_index = driver_index_map[driver_id]
+            value = ratings[row_index, race_index]
+            if np.isnan(value):
+                value = INITIAL_RATING
+                ratings[row_index, race_index] = value
+            current[driver_id] = value
+
+        # Compute all teammate updates from pre-race ratings so a team's result
+        # does not depend on row or pair iteration order. For historic teams
+        # with more than two starters, average each driver's pairwise deltas.
+        teammate_delta_totals = {driver_id: 0.0 for driver_id in starter_ids}
+        teammate_comparison_counts = {driver_id: 0 for driver_id in starter_ids}
+        for _, team in starters.loc[starters["_constructor"].notna()].groupby(
+            "_constructor", sort=False
+        ):
+            team_rows = list(team[["driverId", "_position"]].itertuples(index=False, name=None))
+            for (driver_a, place_a), (driver_b, place_b) in combinations(team_rows, 2):
+                new_a, new_b = calculate_new_elo(
+                    current[driver_a], current[driver_b], int(place_a), int(place_b)
+                )
+                teammate_delta_totals[driver_a] += new_a - current[driver_a]
+                teammate_delta_totals[driver_b] += new_b - current[driver_b]
+                teammate_comparison_counts[driver_a] += 1
+                teammate_comparison_counts[driver_b] += 1
+
+        # Center the overall result adjustment around this race's mean place,
+        # then normalize by field size so years with different grids are
+        # comparable. This component sums to zero across the race field.
+        positions = starters.set_index("driverId")["_position"]
+        field_size = len(positions)
+        mean_position = positions.mean()
+        position_denominator = max(field_size - 1, 1)
+
+        for driver_id in starter_ids:
+            count = teammate_comparison_counts[driver_id]
+            teammate_delta = (
+                teammate_delta_totals[driver_id] / count if count else 0.0
+            )
+            place = float(positions.loc[driver_id])
+            overall_delta = (
+                OVERALL_POSITION_SCALE
+                * (mean_position - place)
+                / position_denominator
+            )
+            row_index = driver_index_map[driver_id]
+            ratings[row_index, race_index] += (
+                TEAMMATE_WEIGHT * teammate_delta
+                + OVERALL_POSITION_WEIGHT * overall_delta
+            )
+
+    return ratings, driver_index_map, sorted_race_ids
