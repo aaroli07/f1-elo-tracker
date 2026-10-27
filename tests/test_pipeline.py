@@ -57,6 +57,40 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(history[index[1], 0], 1000.0)
         self.assertTrue(np.isnan(history[index[2], 0]))
 
+    def test_absolute_finish_position_breaks_equal_teammate_margins(self):
+        drivers = pd.DataFrame({"driverId": [1, 2, 3, 4]})
+        races = pd.DataFrame({"raceId": [1], "date": ["2020-01-01"]})
+        results = pd.DataFrame(
+            [
+                {"raceId": 1, "driverId": 1, "constructorId": 7, "positionOrder": 1, "laps": 10},
+                {"raceId": 1, "driverId": 2, "constructorId": 7, "positionOrder": 5, "laps": 10},
+                {"raceId": 1, "driverId": 3, "constructorId": 8, "positionOrder": 11, "laps": 10},
+                {"raceId": 1, "driverId": 4, "constructorId": 8, "positionOrder": 15, "laps": 10},
+            ]
+        )
+
+        history, index, _ = build_ratings(drivers, races, results)
+
+        self.assertEqual(calculate_new_elo(1000, 1000, 1, 5), calculate_new_elo(1000, 1000, 11, 15))
+        self.assertGreater(history[index[1], 0], history[index[3], 0])
+
+    def test_multiple_same_team_starters_average_pairwise_updates(self):
+        drivers = pd.DataFrame({"driverId": [1, 2, 3]})
+        races = pd.DataFrame({"raceId": [1], "date": ["2020-01-01"]})
+        results = pd.DataFrame(
+            [
+                {"raceId": 1, "driverId": 1, "constructorId": 7, "positionOrder": 1, "laps": 10},
+                {"raceId": 1, "driverId": 2, "constructorId": 7, "positionOrder": 2, "laps": 10},
+                {"raceId": 1, "driverId": 3, "constructorId": 7, "positionOrder": 3, "laps": 10},
+            ]
+        )
+
+        history, index, _ = build_ratings(drivers, races, results)
+
+        self.assertEqual(history[index[1], 0], 1016.0)
+        self.assertEqual(history[index[2], 0], 1000.0)
+        self.assertEqual(history[index[3], 0], 984.0)
+
     def test_rejects_results_for_unknown_races(self):
         drivers = pd.DataFrame({"driverId": [1]})
         races = pd.DataFrame({"raceId": [1], "date": ["2020-01-01"]})
@@ -80,8 +114,8 @@ class PipelineTests(unittest.TestCase):
 
         history, index, _ = build_ratings(drivers, races, results)
 
-        self.assertEqual(history[index[1], 0], 1028.0)
-        self.assertEqual(history[index[2], 0], 972.0)
+        self.assertEqual(history[index[1], 0], 1018.0)
+        self.assertEqual(history[index[2], 0], 982.0)
 
     def test_load_all_uses_expected_filenames_and_directory(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -128,12 +128,11 @@ def build_ratings(data_drivers, data_races, data_results):
                 teammate_comparison_counts[driver_b] += 1
 
         # Center the overall result adjustment around this race's mean place,
-        # then normalize by field size so years with different grids are
-        # comparable. This component sums to zero across the race field.
+        # then normalize by the observed place span so races with different
+        # numbers of starters remain comparable. This component sums to zero.
         positions = starters.set_index("driverId")["_position"]
-        field_size = len(positions)
         mean_position = positions.mean()
-        position_denominator = max(field_size - 1, 1)
+        position_denominator = max(float(positions.max() - positions.min()), 1.0)
 
         for driver_id in starter_ids:
             count = teammate_comparison_counts[driver_id]

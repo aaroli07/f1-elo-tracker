@@ -16,7 +16,7 @@ This repository contains a Python implementation of an Elo-style comparison for 
 
 | Path | Role and relationships |
 | --- | --- |
-| `app/streamlit_app.py` | Streamlit UI; reads the three tables through `load_all`, builds ratings, maps `driverRef` to `driverId`, and renders a Matplotlib chart. |
+| `app/streamlit_app.py` | Cached Streamlit UI; searches full names/references, shows latest ratings for selected drivers, and plots their histories with Matplotlib. |
 | `src/data_load.py::load_all` | Reads `DriversMOD.csv`, `RacesMOD.csv`, and `results.csv` from repository `data/` or an optional supplied directory. |
 | `src/pipeline.py::build_ratings` | Produces a driver-by-race NumPy rating history, a `driverId`→row index dictionary, and race IDs ordered by date. Uses `positionOrder` and completed laps; resolves duplicate driver entries by most laps; averages pairwise updates for teams with more than two starters. |
 | `src/elo.py` | Preserves the teammate update rule (`k=5`, `psf=500`) and defines blend weights and the scale for the overall position component. |
@@ -31,7 +31,7 @@ The data files are local inputs; no database, API, or other external service is 
 
 ## Build, tests, and deployment
 
-The repository has no `pyproject.toml`, setup configuration, CI workflows, or deployment/runtime manifest. `requirements.txt` is the only dependency manifest. The README gives a one-line project description but no setup or run instructions.
+The repository has no `pyproject.toml`, setup configuration, CI workflows, or deployment/runtime manifest. `requirements.txt` is the only dependency manifest. The README documents local setup, the Streamlit command, the rating model, and the unittest command.
 
 ## Known integration gaps and constraints
 
@@ -40,7 +40,7 @@ The repository has no `pyproject.toml`, setup configuration, CI workflows, or de
 - Historic race entries can include more than two same-constructor starters. The pipeline compares every pair and averages each driver's pairwise deltas to avoid scaling updates with team size.
 - Some historic result rows list the same driver more than once in one race. The pipeline keeps the row with the most completed laps, then uses the best numeric order as a tie-breaker; this is a deterministic data-cleaning assumption.
 - Pre-debut matrix values are `NaN`. Consumers should handle this as “no rating yet,” rather than plotting 1000 before the driver started.
-- The overall-position adjustment is centered on each race's mean finishing place, normalized by field size, and blended at 20%; this deliberately allows some car-performance signal into ratings.
+- The overall-position adjustment is centered on each race's mean finishing place, normalized by the observed finishing-place span, and blended at 20%; this deliberately allows some car-performance signal into ratings.
 
 These are observations from the checked-in source and filenames, not a claim that any local deployment or untracked data has the same layout.
 
